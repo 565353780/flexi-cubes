@@ -1,6 +1,6 @@
 import torch
 
-from flexi_cubes.Config.tables import *
+from flexi_cubes.Config.tables import dmc_table, num_vd_table, tet_table, check_table
 from flexi_cubes.Method.utils import check_tensor
 
 
