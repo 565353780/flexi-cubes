@@ -90,7 +90,7 @@ class FCConvertor(object):
     def extractMesh(
         fc_params: Dict,
         training: bool = True,
-    ) -> Tuple[trimesh.Trimesh, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[trimesh.Trimesh, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         从FlexiCubes参数提取三角网格
 
@@ -199,6 +199,7 @@ class FCConvertor(object):
             empty_faces_np = np.zeros((0, 3), dtype=np.int32)
             empty_mesh = trimesh.Trimesh(vertices=empty_vertices_np, faces=empty_faces_np)
             empty_L_dev = torch.tensor(0.0, device=device, dtype=torch.float32)
-            return empty_mesh, empty_vertices, empty_L_dev
+            empty_sdf = torch.tensor(0.0, device=device, dtype=torch.float32)
+            return empty_mesh, empty_vertices, empty_L_dev, empty_sdf
 
-        return mesh, vertices, L_dev
+        return mesh, vertices, L_dev, sdf
