@@ -172,21 +172,11 @@ class FCConvertor(object):
 
             mesh = trimesh.Trimesh(
                 vertices=vertices.detach().cpu().numpy(),
-                faces=faces.cpu().numpy(),
+                faces=faces.cpu().numpy(), 
+                process=False  # disable mesh fixing 
             )
+            trimesh.repair.fix_winding(mesh) 
 
-            # 尝试修复网格（如果可能）
-            try:
-                # 检查并修复网格
-                if hasattr(mesh, 'fill_holes'):
-                    mesh.fill_holes()
-                if hasattr(mesh, 'remove_duplicate_faces'):
-                    mesh.remove_duplicate_faces()
-                if hasattr(mesh, 'remove_unreferenced_vertices'):
-                    mesh.remove_unreferenced_vertices()
-            except Exception:
-                # 如果修复失败，继续使用原始网格
-                pass
 
         except Exception as e:
             # 如果提取失败，返回一个空的网格

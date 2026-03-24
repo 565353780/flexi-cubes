@@ -22,7 +22,7 @@ def loadMeshFile(
         print('\t mesh_file_path:', mesh_file_path)
         return None
 
-    mesh = trimesh.load(mesh_file_path)
+    mesh = trimesh.load(mesh_file_path, process=False)
     if isinstance(mesh, trimesh.Scene):
         mesh = mesh.to_geometry()
 
