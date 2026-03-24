@@ -1,7 +1,8 @@
 import torch
 import trimesh
 import warp as wp
-import numpy as np
+import numpy as np 
+from typing import Dict, Optional, Tuple 
 
 
 # 1. 初始化 Warp
@@ -12,7 +13,8 @@ def compute_sdf_kernel(
     mesh: wp.uint64,                 # Mesh 句柄
     query_points: wp.array(dtype=wp.vec3),
     out_sdf: wp.array(dtype=float),
-    out_gradients: wp.array(dtype=wp.vec3)  # 可选：SDF 梯度（即方向）
+    out_gradients: wp.array(dtype=wp.vec3),   # 可选：SDF 梯度（即方向）
+    out_uvs: wp.array(dtype=wp.vec3) 
 ):
     tid = wp.tid()
     p = query_points[tid]
@@ -27,6 +29,7 @@ def compute_sdf_kernel(
         u = query_res.u
         v = query_res.v
         closest_p = wp.mesh_eval_position(mesh, face_idx, u, v)
+        out_uvs[tid] = wp.vec3(float(face_idx), u, v) 
 
         # 计算距离 (Unsigned)
         dist = wp.length(p - closest_p)
@@ -51,15 +54,18 @@ def compute_sdf_kernel(
         # 如果超出 max_dist
         out_sdf[tid] = 1.0e6
         out_gradients[tid] = wp.vec3(0.0, 0.0, 0.0)
+        out_uvs[tid] = wp.vec3(0.0, 0.0, 0.0) 
 
-def compute_gt_sdf_batch(wp_mesh, points: torch.Tensor) -> torch.Tensor:
+
+def compute_gt_sdf_batch(wp_mesh, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """使用 Warp 计算 GT SDF。
 
     Args:
         points: [N, 3] 或 [..., 3] 采样点坐标。
 
     Returns:
-        sdf: [N] 或 [...] GT SDF 值。
+        sdf: [N] 或 [...] GT SDF 值。 
+        uvs: [fid, u, v] 对应查询点 方便后续颜色取值计算 
     """
     original_shape = points.shape[:-1]
     points_flat = points.view(-1, 3)
@@ -72,27 +78,33 @@ def compute_gt_sdf_batch(wp_mesh, points: torch.Tensor) -> torch.Tensor:
     wp_points = wp.array(points_np, dtype=wp.vec3)
     wp_sdf = wp.zeros(num_points, dtype=float)
     wp_gradients = wp.zeros(num_points, dtype=wp.vec3)
+    wp_uvs = wp.zeros(num_points, dtype=wp.vec3)
 
     # 运行 kernel
     wp.launch(
         kernel=compute_sdf_kernel,
         dim=num_points,
-        inputs=[wp_mesh.id, wp_points, wp_sdf, wp_gradients]
+        inputs=[wp_mesh.id, wp_points, wp_sdf, wp_gradients, wp_uvs]
     )
 
     # 同步并转换回 PyTorch
     wp.synchronize()
-    sdf_np = wp_sdf.numpy()
-    sdf = torch.from_numpy(sdf_np).float().to(points.device)
+    sdf_np = wp_sdf.numpy() 
+    sdf = torch.from_numpy(sdf_np).float().to(points.device) 
+
+    uvs_np = wp_uvs.numpy() 
+    uvs = torch.from_numpy(uvs_np).float().to(points.device) 
 
     # 恢复原始形状
     sdf = sdf.view(*original_shape)
-    return sdf
+    uvs = uvs.view(*original_shape, 3) 
+    return sdf, uvs 
+
 
 def meshToSDF(
     mesh: trimesh.Trimesh,
-    query_points: torch.Tensor,
-) -> torch.Tensor:
+    query_points: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     在指定查询点计算mesh的SDF值（使用trimesh的精确计算）
 
@@ -113,3 +125,4 @@ def meshToSDF(
     )
 
     return compute_gt_sdf_batch(wp_mesh, query_points)
+
