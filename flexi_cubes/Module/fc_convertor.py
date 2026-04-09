@@ -6,8 +6,8 @@ from typing import Union, Dict, Optional, Tuple
 
 from flexi_cubes.Method.io import loadMeshFile
 from flexi_cubes.Method.sdf import meshToSDF
-# from flexi_cubes.Module.flexi_cubes import FlexiCubes
-from flexi_cubes.Module.flexi_cubes_sh import FlexiCubes
+from flexi_cubes.Module.flexi_cubes import FlexiCubes
+from flexi_cubes.Module.sh_grid import SHGrid 
 
 from camera_control.Method.data import toTensor 
 from flexi_cubes.Module.sh_utils import eval_sh, RGB2SH, SH2RGB 
@@ -112,6 +112,7 @@ class FCConvertor(object):
     def createFC(
         mesh: Union[str, trimesh.Trimesh, None] = None,
         resolution: int = 64,
+        sh_resolution: int=128,
         device: str = 'cuda:0',
         initColor: bool = False,
         sh_deg: int = 2, 
@@ -144,20 +145,27 @@ class FCConvertor(object):
 
         # 构建体素网格
         x_nx3, cube_fx8 = fc.construct_voxel_grid(resolution)
+        if sh_resolution != 0:
+            sh_grid = SHGrid(sh_resolution, device=device)
+            voxel_feat_nx3 = sh_grid.grid_vertices
+        else:
+            sh_grid = None
+
         # x_nx3: [N, 3] 网格顶点坐标，范围[-1, 1]
         # cube_fx8: [F, 8] 每个立方体的8个顶点索引
 
         queryColors = None 
         if mesh is not None:
-            sdf_values, grid2mesh_uvs = meshToSDF(mesh, x_nx3) 
+            sdf_values, _ = meshToSDF(mesh, x_nx3)
             if initColor: 
-                queryColors = FCConvertor._queryPtsColors(mesh, grid2mesh_uvs) 
+                _, feat_grid2mesh_uvs = meshToSDF(mesh, voxel_feat_nx3)
+                queryColors = FCConvertor._queryPtsColors(mesh, feat_grid2mesh_uvs)
 
         else:
             # 随机初始化SDF（参考官方示例）
             sdf_values = torch.rand_like(x_nx3[:, 0]) - 0.15
             if initColor: 
-                queryColors = torch.rand( (x_nx3.shape[0], 3)).to(device)
+                queryColors = torch.rand((voxel_feat_nx3.shape[0], 3), device=device)
 
         # 创建可学习参数
         sdf = torch.nn.Parameter(sdf_values.clone().detach(), requires_grad=True)
@@ -166,12 +174,20 @@ class FCConvertor(object):
         deform = torch.nn.Parameter(torch.zeros_like(x_nx3), requires_grad=True)
 
         ##spherical harmonics . sh  [..., C, (deg + 1) ** 2]
-        if queryColors is not None and initColor : 
-            C0_SH = RGB2SH(queryColors) ##N*3 
-            tmp = torch.zeros((x_nx3.shape[0], sh_channel, (sh_deg + 1) ** 2), device=C0_SH.device) 
-            tmp[..., 0] = C0_SH 
-            tmp = tmp.reshape(x_nx3.shape[0], -1 )
-            sh_coeff = torch.nn.Parameter(tmp, requires_grad=True) 
+        if queryColors is not None and initColor and sh_grid is not None:
+            C0_SH = RGB2SH(queryColors)   # [Nv_feat, 3]
+
+            tmp = torch.zeros(
+                (sh_grid.num_vertices, sh_channel, (sh_deg + 1) ** 2),
+                device=C0_SH.device,
+                dtype=C0_SH.dtype,
+            )
+            tmp[..., 0] = C0_SH
+
+            sh_coeff = torch.nn.Parameter(
+                tmp.clone().detach(),
+                requires_grad=True
+            )
         else:
             sh_coeff = None 
 
@@ -202,6 +218,8 @@ class FCConvertor(object):
             "sh_channel": sh_channel, 
             "sh_deg": sh_deg,
             "sh_coeff": sh_coeff, 
+            "sh_grid": sh_grid, 
+            "sh_resolution": sh_resolution
         }
 
     @staticmethod
@@ -235,6 +253,7 @@ class FCConvertor(object):
         sh_coeff = fc_params['sh_coeff']  ## zzh 
         sh_channel = fc_params['sh_channel']  ## zzh 
         sh_deg = fc_params['sh_deg']  ## zzh 
+        sh_grid = fc_params['sh_grid'] 
 
         # 检查输入参数是否包含NaN或Inf，创建清理后的副本用于提取
         sdf_clean = sdf.clone()
@@ -270,20 +289,23 @@ class FCConvertor(object):
         # alpha: [F, 8] - 8个顶点的权重
         # gamma_f: [F] - 每个立方体的权重
         try:
-            vertices, faces, L_dev, verts_sh_coeff = fc(
+            vertices, faces, L_dev  = fc(
                 grid_verts,           # voxelgrid_vertices
                 sdf_clean,            # scalar_field (使用清理后的SDF)
                 cube_fx8,             # cube_idx
-                resolution,           # resolution
+                resolution,           # resolution 
                 beta=weight_clean[:, :12],        # 12条边的插值权重
                 alpha=weight_clean[:, 12:20],     # 8个顶点的权重
                 gamma_f=weight_clean[:, 20],      # 每个立方体的权重（注意是1D）
-                training=training,
-                voxelgrid_features=sh_coeff
-            )   ## sh_coeff -> return coeff of mesh vertices
-            if verts_sh_coeff is not None: 
-                verts_sh_coeff = verts_sh_coeff.reshape (-1, sh_channel, (sh_deg + 1) ** 2 )
-
+                training=training
+            ) 
+            if sh_grid is not None and sh_coeff is not None:
+                verts_sh_coeff = sh_grid(vertices, sh_coeff, detach_points=True) 
+                if verts_sh_coeff is not None: 
+                    verts_sh_coeff = verts_sh_coeff.reshape (-1, sh_channel, (sh_deg + 1) ** 2 )
+            else:
+                verts_sh_coeff = None
+            
             # 检查提取的顶点和面片是否有效
             if vertices is None or faces is None:
                 raise ValueError("FlexiCubes returned None vertices or faces")
